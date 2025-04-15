@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const entryDate = document.getElementById('entryDate');
     const entrySeries = document.getElementById('entrySeries');
     const entryPart = document.getElementById('entryPart');
+    const entryRuns = document.getElementById('entryRuns'); // NEW
     const entryMessage = document.getElementById('entryMessage');
 
     const recordsTableBody = document.getElementById('recordsTable').querySelector('tbody');
@@ -27,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const editDate = document.getElementById('editDate');
     const editSeries = document.getElementById('editSeries');
     const editPart = document.getElementById('editPart');
+    const editRuns = document.getElementById('editRuns'); // NEW
     const saveEditBtn = document.getElementById('saveEditBtn');
 
     const stackToggle = document.getElementById('stackToggle');
@@ -46,7 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let charts = {}; // Store chart instances { id: instance }
 
     // --- Data Store ---
-    let drops = []; // Array of {id, date, series, part}
+    let drops = []; // Array of {id, date, series, part, runs} // MODIFIED
     let configSeries = []; // Array of series names
     let configExpected = {}; // Object { "Series-Part": count }
 
@@ -119,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderRecordsTable = () => {
         recordsTableBody.innerHTML = ''; // Clear table
         if (drops.length === 0) {
-            recordsTableBody.innerHTML = '<tr><td colspan="4" class="text-center">暂无记录</td></tr>';
+            recordsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无记录</td></tr>'; // Modified colspan
             return;
         }
         // Sort by date descending
@@ -131,6 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${record.date}</td>
                 <td>${record.series}</td>
                 <td>${record.part}</td>
+                <td>${record.runs}</td>
                 <td>
                     <button class="btn btn-sm btn-warning edit-btn me-1" data-id="${record.id}">编辑</button>
                     <button class="btn btn-sm btn-danger delete-btn" data-id="${record.id}">删除</button>
@@ -672,6 +675,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const countData = [];
         const similarityData = [];
+        //NEW: Runs Data & Cumulative Drop Chance
+        const runsData = [];
+        let cumulativeDrops = 0;
+        let cumulativeRuns = 0;
+        const cumulativeDropChanceData = [];
 
         // Calculate overall similarity first
         const overallVectors = getDistributionVectors(drops);
@@ -682,32 +690,74 @@ document.addEventListener('DOMContentLoaded', () => {
         // Calculate daily counts and similarities
         sortedDates.forEach(date => {
             const dailyDrops = dropsByDate[date];
+            const dailyRuns = dailyDrops.reduce((sum, drop) => sum + drop.runs, 0); // Sum runs for the day
+
             countData.push([date, dailyDrops.length]);
+            runsData.push([date, dailyRuns]);
 
             // Calculate similarity for this day's drops vs the *overall* expected distribution
             const dailyVectors = getDistributionVectors(dailyDrops);
-            const dailySimilarity = calculateCosineSimilarity(dailyVectors.actualVector, overallVectors.expectedVector); // Compare daily actual vs OVERALL expected
+            const dailySimilarity = calculateCosineSimilarity(dailyVectors.actualVector, overallVectors.expectedVector);
              if (!isNaN(dailySimilarity)) { // Only add valid similarity scores
                  similarityData.push([date, dailySimilarity]);
              } else {
                   similarityData.push([date, null]); // Represent invalid data as null for gaps in line chart
              }
+
+             // Calculate cumulative drop chance
+             cumulativeDrops += dailyDrops.length;
+             cumulativeRuns += dailyRuns;
+             const dropChance = cumulativeRuns > 0 ? (cumulativeDrops / cumulativeRuns) : 0;
+             cumulativeDropChanceData.push([date, dropChance]);
         });
 
         // Update Count Trend Chart
         const countOption = {
-            tooltip: { trigger: 'axis' },
+            tooltip: {
+              trigger: 'axis',
+              axisPointer: { type: 'cross' },
+              formatter: (params) => {
+                const date = params[0].axisValueLabel;
+                let tooltipText = `<strong>${date}</strong><br/>`;
+                params.forEach(param => {
+                  tooltipText += `${param.marker} ${param.seriesName}: ${param.value}<br/>`;
+                });
+                return tooltipText;
+              }
+            },
+            legend: { data: ['每日掉落数量', '每日副本次数', '累积掉落概率'] }, // Add legend
             xAxis: { type: 'time' }, // Use time axis
-            yAxis: { type: 'value', name: '掉落数量', min: 0 },
+            yAxis: [
+               { type: 'value', name: '数量', min: 0 },
+               { type: 'value', name: '掉落概率', min: 0, max: 1, axisLabel: {formatter: '{value}'} } // Adjust max as needed
+
+            ],
             dataZoom: [{ type: 'inside' }, { type: 'slider' }],
              grid: { left: '10%', right: '10%', bottom: '15%', containLabel: true },
-            series: [{
+            series: [
+              {
                 name: '每日掉落数量',
                 type: 'line',
                 smooth: true,
                 data: countData, // Array of [dateString, value]
-                areaStyle: {} // Optional: fill area under line
-            }]
+                areaStyle: {}, // Optional: fill area under line
+              },
+              {
+                name: '每日副本次数',
+                type: 'line',
+                smooth: true,
+                data: runsData,
+                //yAxisIndex: 1 // Use the second yAxis
+              },
+              {
+                name: '累积掉落概率',
+                type: 'line',
+                smooth: true,
+                data: cumulativeDropChanceData,
+                yAxisIndex: 1, // Use the second yAxis
+                //symbol: 'none' // Remove symbols to declutter the chart
+              }
+            ]
         };
         countChart.setOption(countOption, true);
 
@@ -738,9 +788,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const date = entryDate.value;
         const series = entrySeries.value;
         const part = entryPart.value;
+        const runs = parseInt(entryRuns.value, 10); // NEW
 
-        if (!date || !series || !part) {
-            displayMessage(entryMessage, '请填写所有字段！', 'warning');
+        if (!date || !series || !part || isNaN(runs) || runs <= 0) {
+            displayMessage(entryMessage, '请填写所有字段，次数必须是正整数！', 'warning');
             return;
         }
 
@@ -748,7 +799,8 @@ document.addEventListener('DOMContentLoaded', () => {
             id: generateId(),
             date: date,
             series: series,
-            part: part
+            part: part,
+            runs: runs // NEW
         };
 
         drops.push(newRecord);
@@ -757,6 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateAllCharts(); // Update charts after adding data
         entryForm.reset();
         entryDate.valueAsDate = new Date(); // Reset date to today
+        entryRuns.value = 1; // Reset runs to default
         displayMessage(entryMessage, '记录添加成功！', 'success');
     });
 
@@ -769,6 +822,7 @@ document.addEventListener('DOMContentLoaded', () => {
             editDate.value = record.date;
             editSeries.value = record.series; // Assumes series exists in dropdown
             editPart.value = record.part;
+            editRuns.value = record.runs; //NEW
             editModal.show();
         }
     }
@@ -780,11 +834,12 @@ document.addEventListener('DOMContentLoaded', () => {
             id: id,
             date: editDate.value,
             series: editSeries.value,
-            part: editPart.value
+            part: editPart.value,
+            runs: parseInt(editRuns.value, 10) // NEW
         };
 
-        if (!updatedRecord.date || !updatedRecord.series || !updatedRecord.part) {
-             alert('编辑表单中的所有字段都必须填写！'); // Use alert in modal
+        if (!updatedRecord.date || !updatedRecord.series || !updatedRecord.part || isNaN(updatedRecord.runs) || updatedRecord.runs <= 0) {
+             alert('编辑表单中的所有字段都必须填写，次数必须是正整数！'); // Use alert in modal
              return;
         }
 
@@ -832,7 +887,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof importedData === 'object' && importedData !== null &&
                     Array.isArray(importedData.drops) &&
                     Array.isArray(importedData.configSeries) &&
-                    typeof importedData.configExpected === 'object' && importedData.configExpected !== null)
+                    typeof importedData.configExpected === 'object' && importedData.configExpected !== null &&
+                    importedData.drops.every(drop => typeof drop.runs === 'number')) //Check drops array
                 {
                     // Ask user whether to replace or merge (simplest: replace)
                     if (confirm('导入的数据将覆盖现有所有记录和配置。确定要继续吗？')) {
@@ -850,7 +906,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         displayMessage(recordsMessage, '数据导入成功！', 'success');
                     }
                 } else {
-                    throw new Error('JSON文件格式无效或缺少必要的键 (drops, configSeries, configExpected)。');
+                    throw new Error('JSON文件格式无效或缺少必要的键 (drops, configSeries, configExpected) 或 drops数组内的run属性不是number。');
                 }
             } catch (error) {
                 console.error("Import Error:", error);
